@@ -378,7 +378,7 @@ func (msp *bccspmsp) setupSigningIdentity(conf *m.FabricMSPConfig) error {
 		} else if expirationTime.IsZero() {
 			mspLogger.Debug("Signing identity has no known expiration time")
 		} else {
-			return errors.Errorf("signing identity expired %v ago", now.Sub(expirationTime))
+			mspLogger.Warn("Signing identity expired at", expirationTime)
 		}
 
 		msp.signer = sid

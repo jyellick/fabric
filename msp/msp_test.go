@@ -1031,12 +1031,9 @@ func TestIdentityExpired(t *testing.T) {
 	require.NoError(t, err)
 	thisMSP.(*bccspmsp).bccsp = csp
 
+	// Make sure we can load with an expired cert
 	err = thisMSP.Setup(conf)
-	if err != nil {
-		require.Contains(t, err.Error(), "signing identity expired")
-	} else {
-		t.Fatal("Should have failed when loading expired certs")
-	}
+	require.NoError(t, err)
 }
 
 func TestIdentityPolicyPrincipal(t *testing.T) {
