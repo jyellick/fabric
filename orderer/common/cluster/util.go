@@ -125,6 +125,8 @@ func (ss StringSet) subtract(set StringSet) {
 	}
 }
 
+var debugLogger = flogging.MustGetLogger("tls.debug")
+
 // PredicateDialer creates gRPC connections
 // that are only established if the given predicate
 // is fulfilled
@@ -134,17 +136,24 @@ type PredicateDialer struct {
 }
 
 func (dialer *PredicateDialer) UpdateRootCAs(serverRootCAs [][]byte) {
+	startTime := time.Now()
 	dialer.lock.Lock()
 	defer dialer.lock.Unlock()
+	debugLogger.Debugf("Predicate dialer acquired lock to update root CAs after %v\n", time.Since(startTime))
 	dialer.ClientConfig.SecOpts.ServerRootCAs = serverRootCAs
 }
 
 // Dial creates a new gRPC connection that can only be established, if the remote node's
 // certificate chain satisfy verifyFunc
 func (dialer *PredicateDialer) Dial(address string, verifyFunc RemoteVerifier) (*grpc.ClientConn, error) {
+	l := debugLogger.With("remote address", address)
+
+	startTime := time.Now()
 	dialer.lock.RLock()
+	l.Debugf("Predicate dialer acquired lock to Dial after %v\n", time.Since(startTime))
 	cfg := dialer.ClientConfig.Clone()
 	dialer.lock.RUnlock()
+	l.Debugf("Predicate released lock in Dial after %v\n", time.Since(startTime))
 
 	cfg.SecOpts.VerifyCertificate = verifyFunc
 	client, err := comm.NewGRPCClient(cfg)
@@ -154,7 +163,9 @@ func (dialer *PredicateDialer) Dial(address string, verifyFunc RemoteVerifier) (
 	return client.NewConnection(address, "", func(tlsConfig *tls.Config) {
 		// We need to dynamically overwrite the TLS root CAs,
 		// as they may be updated.
+		startTime := time.Now()
 		dialer.lock.RLock()
+		l.Debugf("Predicate dialer NewConnection took %v to acquire lock\n", time.Since(startTime))
 		serverRootCAs := dialer.ClientConfig.Clone().SecOpts.ServerRootCAs
 		dialer.lock.RUnlock()
 
@@ -162,6 +173,7 @@ func (dialer *PredicateDialer) Dial(address string, verifyFunc RemoteVerifier) (
 		for _, pem := range serverRootCAs {
 			tlsConfig.RootCAs.AppendCertsFromPEM(pem)
 		}
+		l.Debugf("Predicate dialer NewConnection took %v to execute\n", time.Since(startTime))
 	})
 }
 

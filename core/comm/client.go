@@ -76,7 +76,8 @@ func (client *GRPCClient) parseSecureOptions(opts *SecureOptions) error {
 	}
 	client.tlsConfig = &tls.Config{
 		VerifyPeerCertificate: opts.VerifyCertificate,
-		MinVersion:            tls.VersionTLS12} // TLS 1.2 only
+		MinVersion:            tls.VersionTLS12, // TLS 1.2 only
+	}
 	if len(opts.ServerRootCAs) > 0 {
 		client.tlsConfig.RootCAs = x509.NewCertPool()
 		for _, certBytes := range opts.ServerRootCAs {
@@ -151,6 +152,7 @@ func (client *GRPCClient) SetMaxSendMsgSize(size int) {
 // SetServerRootCAs sets the list of authorities used to verify server
 // certificates based on a list of PEM-encoded X509 certificate authorities
 func (client *GRPCClient) SetServerRootCAs(serverRoots [][]byte) error {
+	commLogger.Debugf("Updating client server root CAs\n")
 
 	// NOTE: if no serverRoots are specified, the current cert pool will be
 	// replaced with an empty one
@@ -162,6 +164,7 @@ func (client *GRPCClient) SetServerRootCAs(serverRoots [][]byte) error {
 		}
 	}
 	client.tlsConfig.RootCAs = certPool
+	commLogger.Debugf("Done updating client server root CAs\n")
 	return nil
 }
 
@@ -185,7 +188,12 @@ func (client *GRPCClient) NewConnection(address string, serverNameOverride strin
 		client.tlsConfig.ServerName = serverNameOverride
 		dialOpts = append(dialOpts,
 			grpc.WithTransportCredentials(
-				&DynamicClientCredentials{TLSConfig: client.tlsConfig, TLSOptions: tlsOptions}))
+				&DynamicClientCredentials{
+					TLSConfig:  client.tlsConfig,
+					TLSOptions: tlsOptions,
+				},
+			),
+		)
 	} else {
 		dialOpts = append(dialOpts, grpc.WithInsecure())
 	}
@@ -193,8 +201,14 @@ func (client *GRPCClient) NewConnection(address string, serverNameOverride strin
 		grpc.MaxCallRecvMsgSize(client.maxRecvMsgSize),
 		grpc.MaxCallSendMsgSize(client.maxSendMsgSize)))
 
+	commLogger.Debugf("Creating new client connection to %s with dial timeout %v\n", address, client.timeout)
+	startTime := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), client.timeout)
-	defer cancel()
+	defer func() {
+		duration := time.Since(startTime)
+		cancel()
+		commLogger.Debugf("Canceled client connection context to %s with dial timeout %v after %v\n", address, client.timeout, duration)
+	}()
 	conn, err := grpc.DialContext(ctx, address, dialOpts...)
 	if err != nil {
 		return nil, errors.WithMessage(errors.WithStack(err),

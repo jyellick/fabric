@@ -109,7 +109,7 @@ func (sc *serverCreds) ClientHandshake(context.Context,
 func (sc *serverCreds) ServerHandshake(rawConn net.Conn) (net.Conn, credentials.AuthInfo, error) {
 	serverConfig := sc.serverConfig.Config()
 	conn := tls.Server(rawConn, &serverConfig)
-	l := sc.logger.With("remote address", conn.RemoteAddr().String())
+	l := tlsClientLogger.With("remote address", conn.RemoteAddr().String())
 	start := time.Now()
 	if err := conn.Handshake(); err != nil {
 		l.Errorf("Server TLS handshake failed in %s with error %s", time.Since(start), err)
@@ -176,6 +176,10 @@ func (dtc *DynamicClientCredentials) Info() credentials.ProtocolInfo {
 }
 
 func (dtc *DynamicClientCredentials) Clone() credentials.TransportCredentials {
+	startTime := time.Now()
+	defer func() {
+		tlsClientLogger.Debugf("Cloning dynamic client credentials took %v", time.Since(startTime))
+	}()
 	return credentials.NewTLS(dtc.latestConfig())
 }
 

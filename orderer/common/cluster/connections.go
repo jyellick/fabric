@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/hyperledger/fabric/common/crypto"
 	"github.com/hyperledger/fabric/common/metrics"
@@ -37,10 +38,16 @@ type ConnectionMapper interface {
 
 // ConnectionStore stores connections to remote nodes
 type ConnectionStore struct {
-	certsByEndpoints atomic.Value
-	lock             sync.RWMutex
-	Connections      ConnectionMapper
-	dialer           SecureDialer
+	certsByEndpoints   atomic.Value
+	lock               sync.RWMutex
+	Connections        ConnectionMapper
+	ConnectionFailures map[string]*ConnectionFailure
+	dialer             SecureDialer
+}
+
+type ConnectionFailure struct {
+	FirstOccuredAt time.Time
+	Attempts       int
 }
 
 // NewConnectionStore creates a new ConnectionStore with the given SecureDialer
@@ -50,7 +57,8 @@ func NewConnectionStore(dialer SecureDialer, tlsConnectionCount metrics.Gauge) *
 			ConnectionMapper:          make(ConnByCertMap),
 			tlsConnectionCountMetrics: tlsConnectionCount,
 		},
-		dialer: dialer,
+		ConnectionFailures: map[string]*ConnectionFailure{},
+		dialer:             dialer,
 	}
 	return connMapping
 }
@@ -59,7 +67,9 @@ func NewConnectionStore(dialer SecureDialer, tlsConnectionCount metrics.Gauge) *
 // itself with the given TLS certificate
 func (c *ConnectionStore) verifyHandshake(endpoint string, certificate []byte) RemoteVerifier {
 	return func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+		startTime := time.Now()
 		err := crypto.CertificatesWithSamePublicKey(certificate, rawCerts[0])
+		debugLogger.With("remote address", endpoint).Debugf("RemoteVerifier checked certificates in %v", time.Since(startTime))
 		if err == nil {
 			return nil
 		}
@@ -84,13 +94,33 @@ func (c *ConnectionStore) Disconnect(expectedServerCert []byte) {
 // Connection obtains a connection to the given endpoint and expects the given server certificate
 // to be presented by the remote node
 func (c *ConnectionStore) Connection(endpoint string, expectedServerCert []byte) (*grpc.ClientConn, error) {
+	l := debugLogger.With("remote address", endpoint)
 	c.lock.RLock()
 	conn, alreadyConnected := c.Connections.Lookup(expectedServerCert)
-	c.lock.RUnlock()
 
 	if alreadyConnected {
 		return conn, nil
 	}
+	l.Debugf("connection not already connected")
+
+	connectionFailure, ok := c.ConnectionFailures[string(expectedServerCert)]
+	if ok {
+		l.Debugf("connection has previously failed")
+		backoff := connectionFailure.Attempts
+		if backoff > 10 {
+			backoff = 10
+		}
+		backoffTime := time.Duration(backoff) * time.Second
+
+		timeSinceLastFailure := time.Since(connectionFailure.FirstOccuredAt)
+		if timeSinceLastFailure > backoffTime {
+			l.Debugf("connection in backoff for another %v\n", timeSinceLastFailure-backoffTime)
+			return nil, errors.Errorf("connection in backoff for another %v\n", timeSinceLastFailure-backoffTime)
+		} else {
+			l.Debugf("connection in backoff long enough, attempting again")
+		}
+	}
+	c.lock.RUnlock()
 
 	// Else, we need to connect to the remote endpoint
 	return c.connect(endpoint, expectedServerCert)
@@ -109,12 +139,28 @@ func (c *ConnectionStore) connect(endpoint string, expectedServerCert []byte) (*
 	}
 
 	v := c.verifyHandshake(endpoint, expectedServerCert)
+	l := debugLogger.With("remote address", endpoint)
+	l.Debugf("dialing new connection")
 	conn, err := c.dialer.Dial(endpoint, v)
 	if err != nil {
+		connectionFailure, ok := c.ConnectionFailures[string(expectedServerCert)]
+		if !ok {
+			l.Debugf("encountered first error, adding to connection failure map")
+			connectionFailure = &ConnectionFailure{
+				FirstOccuredAt: time.Now(),
+			}
+			c.ConnectionFailures[string(expectedServerCert)] = connectionFailure
+		} else {
+			l.Debugf("connection already in a failed state, but retrying")
+		}
+		connectionFailure.Attempts++
+		l.Debugf("incrementing connection failures to %d", connectionFailure.Attempts)
 		return nil, err
 	}
 
+	debugLogger.With("remote address", endpoint).Debugf("adding new connection to connections list, purging connection failures")
 	c.Connections.Put(expectedServerCert, conn)
+	delete(c.ConnectionFailures, string(expectedServerCert))
 	return conn, nil
 }
 

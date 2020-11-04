@@ -32,6 +32,7 @@ import (
 	"strings"
 
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric/common/flogging"
 	"golang.org/x/net/context"
 )
 
@@ -145,8 +146,12 @@ func (c tlsCreds) Info() ProtocolInfo {
 	}
 }
 
+var debugLogger = flogging.MustGetLogger("tls.debug")
+
 func (c *tlsCreds) ClientHandshake(ctx context.Context, authority string, rawConn net.Conn) (_ net.Conn, _ AuthInfo, err error) {
 	// use local cfg to avoid clobbering ServerName if using multiple endpoints
+	l := debugLogger.With("remote address", rawConn.RemoteAddr().String())
+	l.Debugf("cloning TLS config")
 	cfg := cloneTLSConfig(c.config)
 	if cfg.ServerName == "" {
 		colonPos := strings.LastIndex(authority, ":")
@@ -155,11 +160,16 @@ func (c *tlsCreds) ClientHandshake(ctx context.Context, authority string, rawCon
 		}
 		cfg.ServerName = authority[:colonPos]
 	}
+	l.Debugf("creating TLS client")
 	conn := tls.Client(rawConn, cfg)
 	errChannel := make(chan error, 1)
 	go func() {
+		l.Debugf("go-routine performing handshake")
 		errChannel <- conn.Handshake()
+		l.Debugf("go-routine done performing handshake")
 	}()
+	l.Debugf("waiting on TLS client handshake")
+	defer l.Debugf("TLS client handshake complete")
 	select {
 	case err := <-errChannel:
 		if err != nil {
